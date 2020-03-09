@@ -1,138 +1,185 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <ctype.h>
-#include <unistd.h>
-#include <sys/types.h>
 #include <sys/wait.h>
-static char* args[512];
-pid_t pid;
-int command_pipe[2];
- 
-#define READ  0
-#define WRITE 1
+#include <unistd.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
 
-static int command(int input, int first, int last)
-{
-	int pipettes[2];
-	pipe( pipettes );	
-	pid = fork();
- 
-	if (pid == 0) {
-		if (first == 1 && last == 0 && input == 0) {
-			
-			dup2( pipettes[WRITE], STDOUT_FILENO );
-		} else if (first == 0 && last == 0 && input != 0) {
-			
-			dup2(input, STDIN_FILENO);
-			dup2(pipettes[WRITE], STDOUT_FILENO);
-		} else {
-			
-			dup2( input, STDIN_FILENO );
-		}
- 
-		if (execvp( args[0], args) == -1)
-			_exit(EXIT_FAILURE); 
-	}
- 
-	if (input != 0) 
-		close(input);
- 
-	
-	close(pipettes[WRITE]);
- 
-	
-	if (last == 1)
-		close(pipettes[READ]);
- 
-	return pipettes[READ];
+#define string_BUFSIZE 1024
+#define token_BUFSIZE 64
+#define token_DELIMETERS " \t\r\n\f"
+
+int myCD(char **args);
+int myHELP(char **args);
+int myEXIT(char **args);
+int launchCode(char **args);
+int executeCode(char **args);
+char *readLine(void);
+char **splitLine(char *line);
+void startShell(void);
+
+char *builtin_str[] = {"cd","help","exit"};
+int (*builtin_func[]) (char **) = { &myCD,&myHELP,&myEXIT };
+int totalnum_builtins() {
+  return sizeof(builtin_str) / sizeof(char *);
 }
- 
-static void cleanup(int n)
-{
-	int i;
-	for (i = 0; i < n; ++i) 
-		wait(NULL); 
-}
- 
-static int run(char* cmd, int input, int first, int last);
-static char line[1024];
-static int n = 0;
- 
+
 int main()
 {
-	printf("SIMPLE SHELL: Type 'exit' or send EOF to exit.\n");
-	while (1) {
-	
-		printf("$> ");
-		fflush(NULL);
- 
-		
-		if (!fgets(line, 1024, stdin)) 
-			return 0;
- 
-		int input = 0;
-		int first = 1;
- 
-		char* cmd = line;
-		char* next = strchr(cmd, '|');
- 
-		while (next != NULL) {
-			
-			*next = '\0';
-			input = run(cmd, input, first, 0);
- 
-			cmd = next + 1;
-			next = strchr(cmd, '|');a
-			first = 0;
-		}
-		input = run(cmd, input, first, 1);
-		cleanup(n);
-		n = 0;
-	}
-	return 0;
+  startShell();
+  return EXIT_SUCCESS;
 }
- 
-static void split(char* cmd);
- 
-static int run(char* cmd, int input, int first, int last)
+
+int myCD(char **args)
 {
-	split(cmd);
-	if (args[0] != NULL) {
-		if (strcmp(args[0], "exit") == 0) 
-			exit(0);
-		n += 1;
-		return command(input, first, last);
-	}
-\	return 0;
+  if (args[1] == NULL) {
+    fprintf(stderr, "lsh: expected argument to \"cd\"\n");
+  } else {
+    if (chdir(args[1]) != 0) {
+      perror("lsh");
+    }
+  }
+  return 1;
 }
- 
-static char* skipwhite(char* s)
+
+int myHELP(char **args)
 {
-	while (isspace(*s)) ++s;
-	return s;
+  int i;
+  printf("Welcome to Shell :- \n");
+ 
+  printf("The following are built-in Functions to be used :\n");
+
+  for (i = 0; i < totalnum_builtins(); i++) {
+    printf("  %s\n", builtin_str[i]);
+  }
+  printf("Type program names and arguments, and hit enter to run them.\n");
+  printf("Else, Use the man command for information on other programs.\n");
+  return 1;
 }
- 
-static void split(char* cmd)
+
+int myEXIT(char **args)
 {
-	cmd = skipwhite(cmd);
-	char* next = strchr(cmd, ' ');
-	int i = 0;
- 
-	while(next != NULL) {
-		next[0] = '\0';
-		args[i] = cmd;
-		++i;
-		cmd = skipwhite(next + 1);
-		next = strchr(cmd, ' ');
-	}
- 
-	if (cmd[0] != '\0') {
-		args[i] = cmd;
-		next = strchr(cmd, '\n');
-		next[0] = '\0';
-		++i; 
-	}
- 
-	args[i] = NULL;
+  return 0;
+}
+int launchCode(char **args)
+{
+  pid_t pid, wpid;
+  int status;
+
+  pid = fork();
+  if (pid == 0) {
+    // Child process
+    if (execvp(args[0], args) == -1) {
+      perror("lsh");
+    }
+    exit(EXIT_FAILURE);
+  } else if (pid < 0) {
+    // Error forking
+    perror("lsh");
+  } else {
+    // Parent process
+    do {
+      wpid = waitpid(pid, &status, WUNTRACED);
+    } while (!WIFEXITED(status) && !WIFSIGNALED(status));
+  }
+
+  return 1;
+}
+
+int executeCode(char **args)
+{
+  int i;
+
+  if (args[0] == NULL) {
+    // An empty command was entered.
+    return 1;
+  }
+
+  for (i = 0; i < totalnum_builtins(); i++)
+  {
+    if (strcmp(args[0], builtin_str[i]) == 0) {
+      return (*builtin_func[i])(args);
+    }
+  }
+
+  return launchCode(args);
+}
+char *readLine(void)
+{
+  int bufsize = string_BUFSIZE;
+  int position = 0;
+  char *buffer = malloc(sizeof(char) * bufsize);
+  int c;
+
+  if (!buffer) {
+    fprintf(stderr, "lsh: allocation error\n");
+    exit(EXIT_FAILURE);
+  }
+
+  while (1) {
+    c = getchar();
+   
+    if (c == EOF || c == '\n') {
+      buffer[position] = '\0';
+      return buffer;
+    } else {
+      buffer[position] = c;
+    }
+    position++;
+
+    if (position >= bufsize) {
+      bufsize += string_BUFSIZE;
+      buffer = realloc(buffer, bufsize);
+      if (!buffer) {
+        fprintf(stderr, "lsh: allocation error\n");
+        exit(EXIT_FAILURE);
+      }
+    }
+  }
+}
+
+char **splitLine(char *line)
+{
+  int bufsize = token_BUFSIZE, position = 0;
+  char **tokens = malloc(bufsize * sizeof(char*));
+  char *token;
+
+  if (!tokens) {
+    fprintf(stderr, "lsh: allocation error\n");
+    exit(EXIT_FAILURE);
+  }
+
+  token = strtok(line, token_DELIMETERS);
+  while (token != NULL) {
+    tokens[position] = token;
+    position++;
+
+    if (position >= bufsize) {
+      bufsize += token_BUFSIZE;
+      tokens = realloc(tokens, bufsize * sizeof(char*));
+      if (!tokens) {
+        fprintf(stderr, "lsh: allocation error\n");
+        exit(EXIT_FAILURE);
+      }
+    }
+
+    token = strtok(NULL, token_DELIMETERS);
+  }
+  tokens[position] = NULL;
+  return tokens;
+}
+
+void startShell(void)
+{
+  char *line;
+  char **args;
+  int status;
+
+  do {
+    printf("Shell/commandPrompt> ");
+    line = readLine();
+    args = splitLine(line);
+    status = executeCode(args);  
+    free(line);
+    free(args);
+  } while (status);
 }
